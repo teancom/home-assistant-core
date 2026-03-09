@@ -1681,13 +1681,12 @@ class PipelineInput:
     satellite_id: str | None = None
     """Identifier of the satellite that is processing the input/output of the pipeline."""
 
+    _preparation_error: PipelineError | None = field(
+        init=False, default=None, repr=False, compare=False
+    )
+
     async def execute(self) -> None:
         """Run pipeline."""
-        self.run.start(
-            conversation_id=self.session.conversation_id,
-            device_id=self.device_id,
-            satellite_id=self.satellite_id,
-        )
         current_stage: PipelineStage | None = self.run.start_stage
         stt_audio_buffer: list[EnhancedAudioChunk] = []
         stt_processed_stream: AsyncIterable[EnhancedAudioChunk] | None = None
@@ -1700,7 +1699,16 @@ class PipelineInput:
                 # Volume multiplier only
                 stt_processed_stream = self.run.process_volume_only(self.stt_stream)
 
+        self.run.start(
+            conversation_id=self.session.conversation_id,
+            device_id=self.device_id,
+            satellite_id=self.satellite_id,
+        )
+
         try:
+            if self._preparation_error is not None:
+                raise self._preparation_error
+
             if current_stage == PipelineStage.WAKE_WORD:
                 # wake-word-detection
                 assert stt_processed_stream is not None
@@ -1839,6 +1847,10 @@ class PipelineInput:
                     "the pipeline does not support text-to-speech"
                 )
 
+        await self._prepare_components()
+
+    async def _prepare_components(self) -> None:
+        """Prepare pipeline components for the stages that will run."""
         start_stage_index = PIPELINE_STAGE_ORDER.index(self.run.start_stage)
         end_stage_index = PIPELINE_STAGE_ORDER.index(self.run.end_stage)
 
@@ -1856,7 +1868,7 @@ class PipelineInput:
             <= PIPELINE_STAGE_ORDER.index(PipelineStage.STT)
             <= end_stage_index
         ):
-            # self.stt_metadata can't be None or we'd raise above
+            # self.stt_metadata can't be None or validate() would have raised
             prepare_tasks.append(self.run.prepare_speech_to_text(self.stt_metadata))  # type: ignore[arg-type]
 
         if (

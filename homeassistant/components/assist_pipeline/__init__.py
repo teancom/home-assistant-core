@@ -24,7 +24,7 @@ from .const import (
     SAMPLE_WIDTH,
     SAMPLES_PER_CHUNK,
 )
-from .error import PipelineNotFound
+from .error import PipelineError, PipelineNotFound
 from .pipeline import (
     AudioSettings,
     Pipeline,
@@ -137,5 +137,13 @@ async def async_pipeline_from_audio_stream(
                 audio_settings=audio_settings or AudioSettings(),
             ),
         )
-        await pipeline_input.validate()
+        try:
+            await pipeline_input.validate()
+        except PipelineNotFound:
+            raise
+        except PipelineError as err:
+            # Store preparation errors for execute() to re-raise inside its
+            # event-emitting try block, ensuring satellites always receive
+            # RUN_START/ERROR/RUN_END events.
+            pipeline_input._preparation_error = err
         await pipeline_input.execute()

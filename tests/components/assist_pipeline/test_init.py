@@ -693,3 +693,66 @@ async def test_pipeline_from_audio_stream_with_cloud_auth_fail(
     assert len(events) == 4  # run start, stt start, error, run end
     assert events[2].type == assist_pipeline.PipelineEventType.ERROR
     assert events[2].data["code"] == "cloud-auth-failed"
+
+
+async def test_pipeline_from_audio_stream_intent_agent_not_found(
+    hass: HomeAssistant,
+    mock_stt_provider_entity: MockSTTProviderEntity,
+    init_components,
+    pipeline_storage: assist_pipeline.pipeline.PipelineStorageCollection,
+) -> None:
+    """Test pipeline emits proper error events when conversation agent is not found.
+
+    Previously, prepare_recognize_intent ran during validate() outside the
+    execute() error handler, so an IntentRecognitionError would propagate as
+    an unhandled exception instead of being emitted as a pipeline ERROR event.
+    This caused assist satellites to permanently lose wake word detection.
+    """
+    events: list[assist_pipeline.PipelineEvent] = []
+
+    async def audio_data():
+        yield b"audio"
+
+    # Create a pipeline with a conversation engine that doesn't exist
+    pipeline = await pipeline_storage.async_create_item(
+        {
+            "conversation_engine": "conversation.nonexistent_agent",
+            "conversation_language": "en-US",
+            "language": "en",
+            "name": "test_missing_agent",
+            "stt_engine": mock_stt_provider_entity.entity_id,
+            "stt_language": "en-US",
+            "tts_engine": "test",
+            "tts_language": "en-US",
+            "tts_voice": "Arnold Schwarzenegger",
+            "wake_word_entity": None,
+            "wake_word_id": None,
+        }
+    )
+
+    # Run the pipeline — should NOT raise, should emit error events
+    await assist_pipeline.async_pipeline_from_audio_stream(
+        hass,
+        context=Context(),
+        event_callback=events.append,
+        stt_metadata=stt.SpeechMetadata(
+            language="en-US",
+            format=stt.AudioFormats.WAV,
+            codec=stt.AudioCodecs.PCM,
+            bit_rate=stt.AudioBitRates.BITRATE_16,
+            sample_rate=stt.AudioSampleRates.SAMPLERATE_16000,
+            channel=stt.AudioChannels.CHANNEL_MONO,
+        ),
+        stt_stream=audio_data(),
+        pipeline_id=pipeline.id,
+        audio_settings=assist_pipeline.AudioSettings(is_vad_enabled=False),
+    )
+
+    # Should get: run_start, error, run_end (not an unhandled exception)
+    assert len(events) == 3
+    assert events[0].type == assist_pipeline.PipelineEventType.RUN_START
+    assert events[1].type == assist_pipeline.PipelineEventType.ERROR
+    assert events[2].type == assist_pipeline.PipelineEventType.RUN_END
+
+    assert events[1].data["code"] == "intent-not-supported"
+    assert "nonexistent_agent" in events[1].data["message"]
